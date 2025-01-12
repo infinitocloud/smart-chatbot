@@ -48,7 +48,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
    */
   const login = async (email: string, password: string): Promise<boolean> => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/login`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),

@@ -193,7 +193,7 @@ async function loadBedrockSettings(req, res, next) {
 ///////////////////////////////////////////////////////////////
 // Rutas de USUARIO (REGISTER, LOGIN)
 ///////////////////////////////////////////////////////////////
-app.post('/register', async (req, res) => {
+app.post('/api/register', async (req, res) => {
   const { name, email, password } = req.body;
   console.log('POST /register:', req.body);
 
@@ -226,7 +226,7 @@ app.post('/register', async (req, res) => {
   }
 });
 
-app.post('/login', (req, res) => {
+app.post('/api/login', (req, res) => {
   const { email, password } = req.body;
   console.log('POST /login with:', email);
 
