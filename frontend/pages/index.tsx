@@ -45,11 +45,9 @@ export default function IndexPage() {
       const maybePassword = (document.getElementById('login-password') as HTMLInputElement)?.value;
 
       if (maybeEmail && !email) {
-        console.log('[AutoComplete] email =', maybeEmail);
         setEmail(maybeEmail);
       }
       if (maybePassword && !password) {
-        console.log('[AutoComplete] password =', maybePassword);
         setPassword(maybePassword);
       }
     }, 150);
