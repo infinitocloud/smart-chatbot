@@ -347,7 +347,7 @@ app.use('/admin', authenticateToken, settingsRouter(db));
 app.use('/admin/monitor', authenticateToken, monitorRouter);
 app.use('/admin/knowledge-base-manager', authenticateToken, loadBedrockSettings, knowledgeBaseManager);
 app.use('/file-upload-manager', authenticateToken, loadBedrockSettings, fileUploadManager);
-app.use('/smart-chatbot', authenticateToken, loadBedrockSettings, smartChatbotManager);
+app.use('/api/smart-chatbot', authenticateToken, loadBedrockSettings, smartChatbotManager);
 app.use('/admin/user-management', authenticateToken, userManagementRouter);
 
 ///////////////////////////////////////////////////////////////

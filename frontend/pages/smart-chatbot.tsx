@@ -103,7 +103,7 @@ export default function ChatPage() {
     setUserInput('');
 
     // Llamada con myFetch
-    const result = await myFetch('/smart-chatbot', {
+    const result = await myFetch('/api/smart-chatbot', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userPrompt: userMsg.text }),
@@ -130,7 +130,7 @@ export default function ChatPage() {
     setMessages((prev) => [...prev, userMsg]);
     setIsSending(true);
 
-    const result = await myFetch('/smart-chatbot', {
+    const result = await myFetch('/api/smart-chatbot', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userPrompt: btn.buttonName }),
