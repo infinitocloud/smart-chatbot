@@ -62,8 +62,6 @@ export default function IndexPage() {
   // ───────────────────────────────────────────────────────────
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log('handleLogin => email:', email);
-    console.log('handleLogin => password:', password);
 
     // Limpiar error previo
     setLoginError('');

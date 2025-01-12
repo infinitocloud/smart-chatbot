@@ -1,27 +1,25 @@
 #!/usr/bin/env bash
 
 ###############################################################################
-# SMART CHATBOT INSTALL SCRIPT
+# SMART CHATBOT INSTALL + 2 SYSTEMD SERVICES
 #
 # 1) Installs Node, Git, Nginx, etc.
-# 2) Clones (or updates) the "smart-chatbot" repo in the current directory.
-# 3) Asks for a domain/IP for Nginx (can be left empty => server_name _;).
-# 4) Detects the primary network interface IP via "ip route get 1.1.1.1",
-#    if that fails => fallback to 192.168.1.100.
-# 5) Detects the public IP via "curl http://checkip.amazonaws.com" (if possible).
-# 6) Asks for the backend base URL for the frontend. If left blank => http://<PRIMARY_NET_IP>:3001
-# 7) Configures the frontend (.env.local) with that BACKEND_URL.
-# 8) Configures the backend (npm install).
-# 9) Configures Nginx as a reverse proxy to 127.0.0.1:3001.
-# 10) Optionally runs Certbot for SSL if a domain is provided.
-# 11) Launches BACKEND and FRONTEND in the background with nohup.
-#
-# Note: If you reboot the machine, these nohup processes will stop.
-#       See the "systemd" section at the end for an optional approach
-#       to keep them running after reboots.
+# 2) Clones (or updates) "smart-chatbot" repo in current directory.
+# 3) Asks for domain/IP for Nginx (blank => server_name _;).
+# 4) Detects primary LAN IP (fallback => 192.168.1.100) + public IP.
+# 5) Asks for backend base URL => NEXT_PUBLIC_BACKEND_URL for the frontend.
+# 6) Builds the frontend, installs the backend.
+# 7) Overwrites Nginx config:
+#    - ^/(api|admin|file-upload-manager) => Node(3001)
+#    - everything else => Next.js(3000)
+# 8) (Optional) Certbot if domain is set.
+# 9) Creates 2 systemd services:
+#    - smartchatbot-backend (runs Node on 3001)
+#    - smartchatbot-frontend (runs Next.js on 3000)
+#   Both use the current \$USER, no prompt for user.
 ###############################################################################
 
-# --- Detect primary network interface IP with "ip route get 1.1.1.1" ---
+# --- 0) Detect local + public IPs ---
 PRIMARY_NET_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {print $7; exit}')
 if [ -z "$PRIMARY_NET_IP" ]; then
   PRIMARY_NET_IP="192.168.1.100"
@@ -30,15 +28,14 @@ else
   echo "Detected primary network IP: $PRIMARY_NET_IP"
 fi
 
-# --- Attempt to get public IP via checkip.amazonaws.com ---
 PUBLIC_IP=$(curl -s http://checkip.amazonaws.com || true)
 if [ -z "$PUBLIC_IP" ]; then
-  PUBLIC_IP="(could not detect public IP via checkip.amazonaws.com)"
+  PUBLIC_IP="(could not detect public IP)"
 fi
 echo "Public IP: $PUBLIC_IP"
 
-# --- Ask for domain or IP (can be empty => server_name _;) ---
-read -p "Enter your domain or IP (leave blank if no domain): " MY_DOMAIN
+# --- 1) Ask for domain/IP (blank => server_name _)
+read -p "Enter your domain or IP (leave blank if none): " MY_DOMAIN
 if [ -z "$MY_DOMAIN" ]; then
   SERVER_NAME="_"
   echo "No domain/IP provided; using server_name _ (catch-all)."
@@ -47,33 +44,25 @@ else
   echo "Using domain/IP for Nginx: $SERVER_NAME"
 fi
 
-# --- Ask for backend URL for the frontend ---
-# If blank => http://<PRIMARY_NET_IP>:3001
+# --- 2) Ask for the backend URL for the frontend
 DEFAULT_BACKEND="http://$PRIMARY_NET_IP:3001"
 echo "If you leave the backend URL blank, we'll use: $DEFAULT_BACKEND"
 read -p "Enter the backend base URL (press ENTER to use $DEFAULT_BACKEND): " BACKEND_URL
 BACKEND_URL=${BACKEND_URL:-$DEFAULT_BACKEND}
-
 echo "NEXT_PUBLIC_BACKEND_URL = '$BACKEND_URL'"
 
-###############################################################################
-# Update packages
-###############################################################################
+# --- 3) Update packages
 sudo apt-get update -y
 sudo apt-get upgrade -y
 
-###############################################################################
-# Install basic dependencies (git, curl, nginx, Node.js)
-###############################################################################
+# --- 4) Install basic dependencies
 sudo apt-get install -y git curl nginx
 
 # Install Node.js (version 18 LTS)
 curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
-###############################################################################
-# Clone or update the repository in the current directory
-###############################################################################
+# --- 5) Clone or update the repository
 CURRENT_DIR="$(pwd)"
 REPO_NAME="smart-chatbot"
 REPO_DIR="${CURRENT_DIR}/${REPO_NAME}"
@@ -89,9 +78,7 @@ else
   cd "$CURRENT_DIR"
 fi
 
-###############################################################################
-# Configure FRONTEND
-###############################################################################
+# --- 6) Configure FRONTEND
 echo "Installing/updating FRONTEND dependencies..."
 cd "${REPO_DIR}/frontend"
 
@@ -103,27 +90,33 @@ EOF
 npm install
 npm run build
 
-###############################################################################
-# Configure BACKEND
-###############################################################################
+# --- 7) Configure BACKEND
 echo "Installing/updating BACKEND dependencies..."
 cd "${REPO_DIR}/backend"
 npm install
 
-###############################################################################
-# Configure Nginx Reverse Proxy
-###############################################################################
+# --- 8) Configure Nginx Reverse Proxy
 NGINX_CONF="/etc/nginx/sites-available/${REPO_NAME}.conf"
 NGINX_LINK="/etc/nginx/sites-enabled/${REPO_NAME}.conf"
 
-echo "Creating Nginx config at: $NGINX_CONF"
+echo "Creating/overwriting Nginx config at: $NGINX_CONF"
 sudo bash -c "cat > $NGINX_CONF" <<EOF
 server {
     listen 80;
     server_name ${SERVER_NAME};
 
-    location / {
+    # Node routes => port 3001 (api, admin, file-upload-manager, etc.)
+    location ~* ^/(api|admin|file-upload-manager)(.*)\$ {
         proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+    }
+
+    # Everything else => Next.js => port 3000
+    location / {
+        proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -144,14 +137,14 @@ sudo nginx -t && sudo systemctl reload nginx
 
 if [ "$SERVER_NAME" = "_" ]; then
   echo "Nginx configured with server_name _ (catch-all)."
-  echo "Access your server via: http://$PRIMARY_NET_IP (LAN) or $PUBLIC_IP (if reachable)."
+  echo "Requests /api|/admin|/file-upload-manager => Node(3001)"
+  echo "All other paths => Next.js(3000)"
+  echo "Access via: http://$PRIMARY_NET_IP or $PUBLIC_IP"
 else
-  echo "Nginx configured with domain/IP = $SERVER_NAME => proxies to :3001"
+  echo "Nginx configured with domain/IP = $SERVER_NAME => Node(3001) & Next(3000)"
 fi
 
-###############################################################################
-# (Optional) Certbot SSL if a domain was set
-###############################################################################
+# --- 9) (Optional) Certbot if domain
 if [ "$SERVER_NAME" != "_" ]; then
   read -p "Do you want to install and configure Certbot SSL for $SERVER_NAME? (y/n): " INSTALL_SSL
   if [[ "$INSTALL_SSL" =~ ^[Yy]$ ]]; then
@@ -164,30 +157,85 @@ else
 fi
 
 ###############################################################################
-# Launch BACKEND and FRONTEND in the background
+# 10) Create TWO systemd services:
+#     1) "smartchatbot-backend" => runs Node on port 3001
+#     2) "smartchatbot-frontend" => runs Next.js on port 3000
+# No prompt for user => using $USER
 ###############################################################################
-cd "${REPO_DIR}/backend"
-echo "Starting BACKEND (port 3001) in background..."
-nohup npm run start > /tmp/backend.log 2>&1 &
-BACKEND_PID=$!
 
-cd "${REPO_DIR}/frontend"
-echo "Starting FRONTEND (Next.js, port 3000) in background..."
-nohup npm run start > /tmp/frontend.log 2>&1 &
-FRONTEND_PID=$!
+# BACKEND SERVICE
+SYSTEMD_BACKEND="/etc/systemd/system/smartchatbot-backend.service"
+echo "Creating systemd unit for backend: $SYSTEMD_BACKEND (running as $USER)..."
+
+sudo bash -c "cat > $SYSTEMD_BACKEND" <<EOF
+[Unit]
+Description=Smart Chatbot Backend (Node on port 3001) under $USER
+After=network.target
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=${REPO_DIR}/backend
+KillMode=control-group
+Restart=on-failure
+
+ExecStart=/usr/bin/env npm run start
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# FRONTEND SERVICE
+SYSTEMD_FRONTEND="/etc/systemd/system/smartchatbot-frontend.service"
+echo "Creating systemd unit for frontend: $SYSTEMD_FRONTEND (running as $USER)..."
+
+sudo bash -c "cat > $SYSTEMD_FRONTEND" <<EOF
+[Unit]
+Description=Smart Chatbot Frontend (Next.js on port 3000) under $USER
+After=network.target
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=${REPO_DIR}/frontend
+KillMode=control-group
+Restart=on-failure
+
+ExecStart=/usr/bin/env npm run start
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Reload systemd, enable both on boot, then start them
+sudo systemctl daemon-reload
+sudo systemctl enable smartchatbot-backend
+sudo systemctl enable smartchatbot-frontend
+
+sudo systemctl start smartchatbot-backend
+sudo systemctl start smartchatbot-frontend
+
+echo
+echo "Systemd services created:"
+echo "  smartchatbot-backend => runs Node server on port 3001"
+echo "  smartchatbot-frontend => runs Next.js on port 3000"
+echo "Both services run under user: $USER"
+
+echo "Use 'sudo systemctl status smartchatbot-backend' or 'smartchatbot-frontend' to check logs."
+echo "Use 'sudo systemctl stop/restart smartchatbot-backend' or 'smartchatbot-frontend'."
+echo "They will automatically start on reboot."
 
 echo
 echo "Installation complete!"
-echo "Backend PID=$BACKEND_PID, Frontend PID=$FRONTEND_PID"
-echo "Local IP (primary interface): $PRIMARY_NET_IP"
-echo "Public IP (via checkip.amazonaws.com): $PUBLIC_IP"
+echo "Local IP: $PRIMARY_NET_IP"
+echo "Public IP: $PUBLIC_IP"
+
 if [ "$SERVER_NAME" = "_" ]; then
-  echo "No domain was configured, so Nginx is using 'server_name _'."
-  echo "You may access the server via: http://$PRIMARY_NET_IP (on port 80 in LAN)"
-  echo "If your public IP is reachable, http://$PUBLIC_IP might work externally."
+  echo "No domain => 'server_name _'; access via: http://$PRIMARY_NET_IP"
   echo "Frontend points to: $BACKEND_URL"
 else
-  echo "Access via: http://$SERVER_NAME (or https if SSL installed)."
+  echo "Domain: $SERVER_NAME"
+  echo "Access: http://$SERVER_NAME (or https if Certbot installed)"
   echo "Frontend points to: $BACKEND_URL"
 fi
 
