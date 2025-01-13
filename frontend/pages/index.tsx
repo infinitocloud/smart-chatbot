@@ -6,7 +6,6 @@ import { useAuth } from '../components/AuthProvider';
 import NavBar from '../components/NavBar';
 
 export default function IndexPage() {
-  // Eliminamos 'role' si no lo necesitamos en este componente
   const { token, login } = useAuth();
   const router = useRouter();
 
@@ -27,18 +26,14 @@ export default function IndexPage() {
   const [registerLoading, setRegisterLoading] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
 
-  // ───────────────────────────────────────────────────────────
   // 1) Redirigir a /smart-chatbot si ya hay token
-  // ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (token) {
       router.push('/smart-chatbot');
     }
   }, [token, router]);
 
-  // ───────────────────────────────────────────────────────────
   // 2) Truco para capturar autocompletado con setTimeout
-  // ───────────────────────────────────────────────────────────
   useEffect(() => {
     const timerId = setTimeout(() => {
       const maybeEmail = (document.getElementById('login-email') as HTMLInputElement)?.value;
@@ -55,29 +50,21 @@ export default function IndexPage() {
     return () => clearTimeout(timerId);
   }, [email, password]);
 
-  // ───────────────────────────────────────────────────────────
   // 3) handleLogin => llama a login() del AuthProvider
-  // ───────────────────────────────────────────────────────────
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    // Limpiar error previo
     setLoginError('');
     setLoginLoading(true);
 
-    // login(...) ahora devuelve boolean (true=ok, false=invalid)
     const success = await login(email, password);
     setLoginLoading(false);
 
     if (!success) {
-      // Mostramos un mensaje debajo del botón
       setLoginError('Invalid credentials. Please check your email/password.');
     }
   };
 
-  // ───────────────────────────────────────────────────────────
   // 4) handleRegister => llama /register => luego login()
-  // ───────────────────────────────────────────────────────────
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     console.log('handleRegister => name, company, email, password =>',
@@ -93,7 +80,6 @@ export default function IndexPage() {
       });
 
       if (res.ok) {
-        // Auto-login => login(...) retorna boolean
         const success = await login(email, password);
         if (!success) {
           alert('Registration succeeded, but login failed. Try logging in manually.');
@@ -109,17 +95,12 @@ export default function IndexPage() {
     }
   };
 
-  // ───────────────────────────────────────────────────────────
-  // Render principal con NavBar incluido
-  // ───────────────────────────────────────────────────────────
   return (
     <>
-      {/* NavBar global (siempre visible) */}
       <NavBar />
 
       <div className="min-h-screen bg-blue-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-8 w-full min-h-screen flex flex-col md:flex-row">
-
           {/* Columna IZQUIERDA => texto de introducción */}
           <div className="w-full md:w-[60%] flex flex-col justify-center items-start p-8">
             <div className="max-w-xl text-left">
@@ -168,10 +149,9 @@ export default function IndexPage() {
 
             {/* Formulario de LOGIN */}
             {tab === 'login' && (
-              <form onSubmit={handleLogin} className="space-y-4">
+              <form onSubmit={handleLogin} method="post" action="#" className="space-y-4">
                 <input
                   id="login-email"
-                  name="login-email"
                   autoComplete="username"
                   className="border w-full p-2"
                   placeholder="Email"
@@ -180,7 +160,6 @@ export default function IndexPage() {
                 />
                 <input
                   id="login-password"
-                  name="login-password"
                   type="password"
                   autoComplete="current-password"
                   className="border w-full p-2"
@@ -197,7 +176,6 @@ export default function IndexPage() {
                   {loginLoading ? 'Loading...' : 'Log In'}
                 </button>
 
-                {/* Error debajo del botón */}
                 {loginError && (
                   <p className="text-red-600 text-sm mt-2">{loginError}</p>
                 )}
@@ -206,7 +184,7 @@ export default function IndexPage() {
 
             {/* Formulario de REGISTER */}
             {tab === 'register' && (
-              <form onSubmit={handleRegister} className="space-y-4">
+              <form onSubmit={handleRegister} method="post" action="#" className="space-y-4">
                 <input
                   className="border w-full p-2"
                   placeholder="Name"
@@ -221,18 +199,18 @@ export default function IndexPage() {
                 />
                 <input
                   id="register-email"
+                  autoComplete="username"
                   className="border w-full p-2"
                   placeholder="Email"
-                  autoComplete="username"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                 />
                 <input
                   id="register-password"
-                  className="border w-full p-2"
                   type="password"
-                  placeholder="Password"
                   autoComplete="new-password"
+                  className="border w-full p-2"
+                  placeholder="Password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
