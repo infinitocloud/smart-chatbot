@@ -24,17 +24,14 @@ export default function KnowledgeBasePage() {
   const { token, role } = useAuth();
   const router = useRouter();
 
-  // KB activa (o null si no hay)
   const [activeKnowledgeBase, setActiveKnowledgeBase] = useState<AWSKnowledgeBase | null>(null);
-
-  // Lista de documentos en la KB
   const [documents, setDocuments] = useState<DocumentData[]>([]);
-
-  // Estado para mensajes en la UI (subiendo, error, éxito, etc.)
   const [uploadStatus, setUploadStatus] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
-  // 1) Listar documentos (useCallback para que sea dependencia estable)
+  // Function to fetch documents for a given knowledge base and data source
   const fetchDocuments = useCallback(async (knowledgeBaseName: string, dataSourceId: string) => {
+    setIsLoading(true);
     try {
       const bodyPayload = {
         action: 'list-documents',
@@ -54,7 +51,8 @@ export default function KnowledgeBasePage() {
 
       const data = result.data || {};
       if (data.documentDetails && data.documentDetails.length > 0) {
-        setDocuments(data.documentDetails);
+        // Sort documents alphabetically by name
+        setDocuments([...data.documentDetails].sort((a, b) => a.name.localeCompare(b.name)));
       } else {
         setDocuments([]);
         console.log('No documents found or documentDetails is empty.');
@@ -62,11 +60,20 @@ export default function KnowledgeBasePage() {
     } catch (error) {
       console.error('Error fetching documents:', error);
       setDocuments([]);
+    } finally {
+      setIsLoading(false);
     }
-  }, [setDocuments]);
+  }, []);
 
-  // 2) Obtener la KB activa (useCallback también)
+  // Helper to extract data source ID from the string format
+  const extractDataSourceId = (dataSource: string): string | null => {
+    const match = dataSource.match(/\(([^)]+)\)/);
+    return match ? match[1] : null;
+  };
+
+  // Function to fetch active knowledge base
   const fetchActiveKnowledgeBase = useCallback(async () => {
+    setIsLoading(true);
     try {
       const bodyPayload = { action: 'list-aws-knowledge-bases' };
       const result = await myFetch('/admin/knowledge-base-manager', {
@@ -86,10 +93,8 @@ export default function KnowledgeBasePage() {
       );
       setActiveKnowledgeBase(activeKB || null);
 
-      // Si tenemos KB activa => cargar sus documentos
       if (activeKB) {
-        const match = activeKB.dataSource.match(/\(([^)]+)\)/);
-        const dataSourceId = match?.[1];
+        const dataSourceId = extractDataSourceId(activeKB.dataSource);
         if (dataSourceId) {
           fetchDocuments(activeKB.name, dataSourceId);
         }
@@ -97,143 +102,176 @@ export default function KnowledgeBasePage() {
     } catch (error) {
       console.error('Error fetching AWS knowledge bases:', error);
       setActiveKnowledgeBase(null);
+    } finally {
+      setIsLoading(false);
     }
-  }, [fetchDocuments, setActiveKnowledgeBase]);
+  }, [fetchDocuments]);
 
-  // 3) useEffect => sólo se activa cuando cambien token, role o router
-  //    (y se reejecuta si fetchActiveKnowledgeBase cambia su referencia, cosa que no ocurrirá
-  //     mientras mantengas la misma dependencia array en useCallback)
   useEffect(() => {
-    // Si no hay token o no es admin, redirigir
     if (!token || role !== 'admin') {
       router.push('/');
       return;
     }
     fetchActiveKnowledgeBase();
+    // Clear upload status when component mounts or re-mounts
+    setUploadStatus('');
   }, [token, role, router, fetchActiveKnowledgeBase]);
 
-  // 4) Subir archivo => /file-upload-manager => luego add-document
-  //    (no está en un useEffect, así que no hace falta useCallback a menos que quieras)
+  // Function to handle file upload for multiple files in batches with retry
   async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const files = event.target.files;
     if (!files || files.length === 0) return;
 
-    setUploadStatus('Uploading file...');
+    setUploadStatus("Uploading Documents...");
 
-    // 1) Subimos el archivo al endpoint /file-upload-manager
-    const formData = new FormData();
-    formData.append('file', files[0]);
-
-    const uploadRes = await myFetch('/file-upload-manager', {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (uploadRes.status === 'error') {
-      console.error('Upload Error:', uploadRes.message);
-      setUploadStatus(uploadRes.message || 'Failed to upload file');
-      return;
+    const fileBatches = [];
+    for (let i = 0; i < files.length; i += 10) {
+      fileBatches.push(Array.from(files).slice(i, i + 10));
     }
 
-    const uploadResp = uploadRes.data || {};
-    setUploadStatus('File uploaded successfully');
+    let hasErrors = false;
+    for (let batchIndex = 0; batchIndex < fileBatches.length; batchIndex++) {
+      const batch = fileBatches[batchIndex];
 
-    // 2) Construir s3Uri
-    try {
-      const location = uploadResp.location;
-      if (!location) {
-        setUploadStatus('No location in upload response');
-        return;
+      try {
+        const uploadPromises = batch.map(file => {
+          const formData = new FormData();
+          formData.append('file', file);
+          return myFetch('/file-upload-manager', {
+            method: 'POST',
+            body: formData,
+          });
+        });
+
+        const uploadResponses = await Promise.all(uploadPromises);
+
+        // Handle document addition with retry strategy
+        const addDocumentPromises = uploadResponses.map(async (uploadRes, index) => {
+          let retries = 0;
+          const maxRetries = 3;
+          const baseDelay = 1000; // 1 second initial delay
+
+          while (retries < maxRetries) {
+            try {
+              if (uploadRes.status === 'error') {
+                throw new Error(uploadRes.message || 'Failed to upload file');
+              }
+              const uploadData = uploadRes.data || {};
+              const location = uploadData.files ? uploadData.files[0].location : (uploadData.location || (uploadData.locations && uploadData.locations[0]));
+              if (!location) throw new Error('No location in upload response');
+
+              const urlObj = new URL(location);
+              const bucketName = urlObj.host.split('.')[0];
+              const pathName = urlObj.pathname.startsWith('/') ? urlObj.pathname.substring(1) : urlObj.pathname;
+              const s3Uri = `s3://${bucketName}/${pathName}`;
+
+              if (!activeKnowledgeBase) throw new Error('No active KB found to index document');
+
+              const dataSourceId = extractDataSourceId(activeKnowledgeBase.dataSource);
+              if (!dataSourceId) throw new Error('Could not parse dataSourceId');
+
+              const addDocRes = await myFetch('/admin/knowledge-base-manager', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  action: 'add-document',
+                  knowledgeBaseName: activeKnowledgeBase.name,
+                  dataSourceId,
+                  s3Uri,
+                }),
+              });
+
+              if (addDocRes.status === 'error') {
+                throw new Error(addDocRes.message || 'Failed to add document');
+              }
+
+              return batch[index].name; // Return the file name for success message
+
+            } catch (error) {
+              if (error.message.includes('max number of documentLevelAPI request')) {
+                retries++;
+                const delay = baseDelay * Math.pow(2, retries); // Exponential backoff
+                await new Promise(resolve => setTimeout(resolve, delay));
+              } else {
+                throw error; // For other errors, stop retrying
+              }
+            }
+          }
+
+          throw new Error(`Failed to add document after ${maxRetries} retries`);
+        });
+
+        const results = await Promise.allSettled(addDocumentPromises);
+
+        const batchErrors = results
+          .filter(result => result.status === 'rejected')
+          .map((result, index) => `${batch[index].name}: ${(result as PromiseRejectedResult).reason.message}`);
+
+        if (batchErrors.length > 0) {
+          hasErrors = true;
+        }
+
+        // Add a delay before starting the next batch to avoid hitting rate limits immediately
+        if (batchIndex < fileBatches.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 5000)); // 5 second delay before next batch
+        }
+      } catch (err) {
+        hasErrors = true;
+        console.error(`Error processing batch ${batchIndex + 1}:`, err);
+        break; // Stop processing if there's an overarching error
       }
+    }
 
-      const urlObj = new URL(location);
-      const bucketName = urlObj.host.split('.')[0];
-      const pathName = urlObj.pathname.startsWith('/')
-        ? urlObj.pathname.substring(1)
-        : urlObj.pathname;
-      const s3Uri = `s3://${bucketName}/${pathName}`;
+    // Final status message - this will persist until the page is refreshed or navigated away
+    setUploadStatus(hasErrors ? "Upload completed with issues" : "Upload complete");
 
-      // 3) Agregar documento a la KB (si existe)
-      if (!activeKnowledgeBase) {
-        setUploadStatus('No active KB found to index document');
-        return;
+    // Refresh documents list after all batches are processed
+    if (activeKnowledgeBase) {
+      const dataSourceId = extractDataSourceId(activeKnowledgeBase.dataSource);
+      if (dataSourceId) {
+        fetchDocuments(activeKnowledgeBase.name, dataSourceId);
       }
-      setUploadStatus('Indexing document into KB...');
-      const match = activeKnowledgeBase.dataSource.match(/\(([^)]+)\)/);
-      const dataSourceId = match?.[1];
-      if (!dataSourceId) {
-        console.error('Could not parse dataSourceId');
-        setUploadStatus('Error: Could not parse dataSourceId');
-        return;
-      }
-
-      const addDocRes = await myFetch('/admin/knowledge-base-manager', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'add-document',
-          knowledgeBaseName: activeKnowledgeBase.name,
-          dataSourceId,
-          s3Uri,
-        }),
-      });
-
-      if (addDocRes.status === 'error') {
-        console.error('Add Document Error:', addDocRes.message);
-        setUploadStatus(addDocRes.message || 'Failed to add document');
-        return;
-      }
-
-      // ok
-      setUploadStatus(`Document successfully indexed: ${files[0].name}`);
-
-      // 4) Refrescar la lista
-      fetchDocuments(activeKnowledgeBase.name, dataSourceId);
-    } catch (err) {
-      console.error('Error constructing s3Uri or adding doc:', err);
-      setUploadStatus(String(err));
     }
   }
 
-  // 5) Eliminar un documento => (delete-document)
+  // Function to handle document removal
   async function handleRemoveDocument(documentId: string) {
     if (!activeKnowledgeBase) return;
-    const match = activeKnowledgeBase.dataSource.match(/\(([^)]+)\)/);
-    const dataSourceId = match?.[1];
+    const dataSourceId = extractDataSourceId(activeKnowledgeBase.dataSource);
     if (!dataSourceId) {
       console.error('Could not parse dataSourceId for deleting doc');
       return;
     }
 
-    console.log('Deleting doc =>', documentId);
     if (!confirm(`Are you sure you want to remove document: ${documentId}?`)) {
       return;
     }
 
-    const removeRes = await myFetch('/admin/knowledge-base-manager', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'delete-document',
-        knowledgeBaseName: activeKnowledgeBase.name,
-        dataSourceId,
-        s3Uri: documentId,
-      }),
-    });
+    try {
+      const removeRes = await myFetch('/admin/knowledge-base-manager', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'delete-document',
+          knowledgeBaseName: activeKnowledgeBase.name,
+          dataSourceId,
+          s3Uri: documentId,
+        }),
+      });
 
-    if (removeRes.status === 'error') {
-      alert(`Error deleting document: ${removeRes.message}`);
-      return;
+      if (removeRes.status === 'error') {
+        alert(`Error deleting document: ${removeRes.message}`);
+        return;
+      }
+
+      alert('Document deleted successfully');
+      fetchDocuments(activeKnowledgeBase.name, dataSourceId);
+    } catch (err) {
+      console.error('Error deleting document:', err);
+      alert('An error occurred while deleting the document');
     }
-
-    alert('Document deleted successfully');
-    // Re-listar
-    fetchDocuments(activeKnowledgeBase.name, dataSourceId);
   }
 
-  // ===========================================================================
-  // Render principal
-  // ===========================================================================
   if (!token || role !== 'admin') return null;
 
   return (
@@ -253,65 +291,54 @@ export default function KnowledgeBasePage() {
             <div className="mb-4">
               <h2 className="text-lg font-semibold mb-2">Documents:</h2>
 
-              {documents.length > 0 ? (
-                <div className="space-y-4">
-                  {/* Tabla con tamaño limitado (similar a "settings") */}
-                  <div className="max-w-sm overflow-x-auto border rounded bg-white">
-                    <table className="w-full text-sm">
-                      <thead className="bg-gray-100 border-b">
-                        <tr>
-                          <th className="py-2 px-4 text-left">Document</th>
-                          <th className="py-2 px-2 w-12 text-center">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {documents.map((doc) => (
-                          <tr key={doc.documentId} className="border-b">
-                            <td className="py-2 px-4">{doc.name}</td>
-                            <td className="py-2 px-2 w-12 text-center align-middle">
-                              <button
-                                onClick={() => handleRemoveDocument(doc.documentId)}
-                                className="text-red-600 hover:text-red-800 p-0"
-                                style={{ lineHeight: '1' }}
-                                title="Remove"
-                              >
-                                <i className="fa-solid fa-xmark"></i>
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* Botón Add Document */}
-                  <label className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 cursor-pointer inline-block">
-                    Add Document
-                    <input
-                      type="file"
-                      onChange={handleFileUpload}
-                      accept=".pdf,.doc,.docx,.html,.xls,.xlsx,.csv"
-                      className="hidden"
-                    />
-                  </label>
-                  <p className="text-sm text-gray-600">{uploadStatus}</p>
-                </div>
+              {isLoading ? (
+                <p>Loading documents...</p>
               ) : (
-                <>
-                  <p>No documents found.</p>
+                <div className="space-y-4">
+                  {documents.length > 0 ? (
+                    <div className="max-w-lg overflow-x-auto border rounded bg-white">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-100 border-b">
+                          <tr>
+                            <th className="py-2 px-4 text-left">Document</th>
+                            <th className="py-2 px-2 w-12 text-center">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {documents.map((doc) => (
+                            <tr key={doc.documentId} className="border-b">
+                              <td className="py-2 px-4">{doc.name}</td>
+                              <td className="py-2 px-2 w-12 text-center align-middle">
+                                <button
+                                  onClick={() => handleRemoveDocument(doc.documentId)}
+                                  className="text-red-600 hover:text-red-800 p-0"
+                                  style={{ lineHeight: '1' }}
+                                  title="Remove"
+                                >
+                                  <i className="fa-solid fa-xmark"></i>
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <p>No documents found.</p>
+                  )}
 
                   <label className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 cursor-pointer inline-block">
-                    Add Document
+                    Add Documents
                     <input
                       type="file"
                       onChange={handleFileUpload}
-                      accept=".pdf,.doc,.docx,.html,.xls,.xlsx,.csv"
+                      accept=".pdf,.doc,.docx,.html,.xls,.xlsx,.csv,.txt"
+                      multiple
                       className="hidden"
                     />
                   </label>
-
-                  <p className="mt-2 text-sm text-gray-600">{uploadStatus}</p>
-                </>
+                  {uploadStatus && <p className="text-sm text-gray-600">{uploadStatus}</p>}
+                </div>
               )}
             </div>
           </>
@@ -322,4 +349,3 @@ export default function KnowledgeBasePage() {
     </AdminLayout>
   );
 }
-

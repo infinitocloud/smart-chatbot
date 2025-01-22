@@ -41,10 +41,11 @@ interface UsageLog {
   outputTokens: number;
   timestamp: string;
   latencyMs: number | null;
+  feedback?: string; // <-- NUEVO campo opcional
 }
 
 interface SystemStats {
-  cpuUtilPercent?: number;  // 0..100 (CPU total estilo htop)
+  cpuUtilPercent?: number;  // 0..100
   systemMemory: {
     totalMem: number;
     freeMem: number;
@@ -107,29 +108,25 @@ export default function MonitorPage() {
   // Auto-refresh
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshInterval, setRefreshInterval] = useState(5);
-
-  // ⚠️ CORRECCIÓN: Ajustar el tipo de intervalRef para que sea un número (DOM) en TS
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // ==== Historial local para el 4to gráfico: CPU, Mem, Disco ====
+  // Historial local para CPU/Mem/Disk (para el 4to gráfico)
   interface HardwareSnapshot {
-    timestamp: string; // "HH:mm:ss" local
-    cpu: number;       // stats.cpuUtilPercent
-    mem: number;       // stats.systemMemory.usedPercent
-    disk: number;      // stats.diskUsage.usedPercent
+    timestamp: string; // "HH:mm:ss"
+    cpu: number;
+    mem: number;
+    disk: number;
   }
   const [hardwareSnapshots, setHardwareSnapshots] = useState<HardwareSnapshot[]>([]);
 
   // --------------------------------------------------------------------------------
-  // 1) fetchMonitorData -> uso de useCallback para ESLint (exhaustive-deps)
+  // fetchMonitorData
   // --------------------------------------------------------------------------------
   const fetchMonitorData = useCallback(async () => {
     if (!token) return;
     setError('');
 
-    // Adjuntamos query params: ?page=... & limit=...
     const queryString = `?page=${page}&limit=${limit}`;
-    // Llamamos al endpoint /admin/monitor con myFetch
     const result = await myFetch(`/admin/monitor${queryString}`, {
       method: 'GET',
     });
@@ -139,7 +136,6 @@ export default function MonitorPage() {
       return;
     }
 
-    // status==='ok'
     const data = result.data || {};
     // 1) Logs & stats
     setLogs(data.logs || []);
@@ -172,7 +168,7 @@ export default function MonitorPage() {
   }, [token, page, limit]);
 
   // --------------------------------------------------------------------------------
-  // 2) Efecto: chequeo de token => fetchMonitorData
+  // Efecto: chequeo de token => fetchMonitorData
   // --------------------------------------------------------------------------------
   useEffect(() => {
     if (!token) {
@@ -183,10 +179,9 @@ export default function MonitorPage() {
   }, [token, router, fetchMonitorData]);
 
   // --------------------------------------------------------------------------------
-  // 3) Efecto: autoRefresh => setInterval / clearInterval
+  // Efecto: autoRefresh => setInterval / clearInterval
   // --------------------------------------------------------------------------------
   useEffect(() => {
-    // Limpieza previa (si ya hubiera un interval)
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
@@ -202,7 +197,6 @@ export default function MonitorPage() {
       }, refreshInterval * 1000);
     }
 
-    // Cleanup al desmontar
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
@@ -211,7 +205,7 @@ export default function MonitorPage() {
   }, [autoRefresh, refreshInterval, fetchMonitorData]);
 
   // --------------------------------------------------------------------------------
-  // Funciones de paginación
+  // Paginación
   // --------------------------------------------------------------------------------
   const handleLimitChange = (newLimit: number) => {
     setLimit(newLimit);
@@ -389,6 +383,7 @@ export default function MonitorPage() {
       }
     ]
   };
+
   const hwLineOptions = {
     responsive: true,
     scales: {
@@ -456,7 +451,6 @@ export default function MonitorPage() {
 
         {/* Grilla de 4 gráficos */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-8">
-
           {/* #1 Queries (Bar) */}
           <div className="bg-white p-2 rounded border">
             {graphData.length === 0 && !error && (
@@ -517,6 +511,8 @@ export default function MonitorPage() {
                     <th className="py-2 px-4 border-b">Output Tokens</th>
                     <th className="py-2 px-4 border-b">Timestamp</th>
                     <th className="py-2 px-4 border-b">Latency (ms)</th>
+                    {/* NUEVA COLUMNA: Feedback */}
+                    <th className="py-2 px-4 border-b">Feedback</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -529,7 +525,13 @@ export default function MonitorPage() {
                       <td className="py-2 px-4 border-b text-center">{log.inputTokens}</td>
                       <td className="py-2 px-4 border-b text-center">{log.outputTokens}</td>
                       <td className="py-2 px-4 border-b text-center">{log.timestamp}</td>
-                      <td className="py-2 px-4 border-b text-center">{log.latencyMs ?? '-'}</td>
+                      <td className="py-2 px-4 border-b text-center">
+                        {log.latencyMs ?? '-'}
+                      </td>
+                      {/* Valor de la columna feedback */}
+                      <td className="py-2 px-4 border-b text-center">
+                        {log.feedback || ''}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -575,7 +577,7 @@ export default function MonitorPage() {
           </div>
         </div>
 
-        {/* (Opcional) Info textual de CPU/Mem/Disk */}
+        {/* Info textual de CPU/Mem/Disk */}
         {stats && (
           <div>
             <h2 className="text-xl font-semibold mb-2">
@@ -583,14 +585,17 @@ export default function MonitorPage() {
             </h2>
             <div className="space-y-2">
               <div>
-                <strong>CPU (htop style):</strong> {stats.cpuUtilPercent?.toFixed(1)} %
+                <strong>CPU (htop style):</strong>{' '}
+                {stats.cpuUtilPercent?.toFixed(1)} %
               </div>
               <div>
-                <strong>MemUsed:</strong> {stats.systemMemory?.usedPercent?.toFixed(1)} %
+                <strong>MemUsed:</strong>{' '}
+                {stats.systemMemory?.usedPercent?.toFixed(1)} %
               </div>
               {stats.diskUsage && (
                 <div>
-                  <strong>DiskUsed:</strong> {stats.diskUsage.usedPercent?.toFixed(1)} %
+                  <strong>DiskUsed:</strong>{' '}
+                  {stats.diskUsage.usedPercent?.toFixed(1)} %
                 </div>
               )}
             </div>

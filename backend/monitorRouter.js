@@ -1,4 +1,5 @@
 // monitorRouter.js
+
 const express = require('express');
 const router = express.Router();
 const sqlite3 = require('sqlite3').verbose();
@@ -10,19 +11,14 @@ const { execSync } = require('child_process'); // Para ejecutar df -k
 let lastProcStat = null;
 
 /**
- * Lee /proc/stat y devuelve un objeto { idle, total } de la línea "cpu" global.
- * /proc/stat -> línea ej: "cpu  3357 0 4313 1362393 ..." => user nice system idle ...
+ * Lee /proc/stat y devuelve un objeto { idle, total } de la línea "cpu".
  */
 function readProcStatCpu() {
   try {
     const lines = require('fs').readFileSync('/proc/stat', 'utf8').split('\n');
-    // Buscamos la línea que empieza con "cpu " (espacio), la "global"
     for (let line of lines) {
       if (line.startsWith('cpu ')) {
-        // Ej: "cpu  3357 0 4313 1362393 ..."
         const parts = line.trim().split(/\s+/);
-        // parts => ["cpu", user, nice, system, idle, iowait, irq, softirq, steal, guest, guest_nice...]
-        // Tomamos idle + iowait como "idle", y sumamos todo para "total"
         const user = parseInt(parts[1], 10) || 0;
         const nice = parseInt(parts[2], 10) || 0;
         const system = parseInt(parts[3], 10) || 0;
@@ -42,13 +38,11 @@ function readProcStatCpu() {
   } catch (err) {
     console.error('Error reading /proc/stat:', err);
   }
-  // Si algo falla, devolvemos null
   return null;
 }
 
 /**
- * Calcula el uso total de CPU (%) comparando la lectura actual con la previa.
- * Retorna un número 0..100 (aprox).
+ * Calcula uso total de CPU (%) comparando la lectura actual vs la previa
  */
 function getCpuUsagePercent() {
   const current = readProcStatCpu();
@@ -56,18 +50,13 @@ function getCpuUsagePercent() {
     return 0;
   }
   if (!lastProcStat) {
-    // primera vez => guardamos y retornamos 0
     lastProcStat = current;
     return 0;
   }
-
-  // deltas
   const idleDelta = current.idle - lastProcStat.idle;
   const totalDelta = current.total - lastProcStat.total;
 
-  // Actualizar lastProcStat para la próxima
   lastProcStat = current;
-
   if (totalDelta <= 0) {
     return 0;
   }
@@ -75,9 +64,9 @@ function getCpuUsagePercent() {
   return usage;
 }
 
-// GET /admin/monitor
+// ==================== GET /admin/monitor ====================
 router.get('/', (req, res) => {
-  // 1) Chequeo de autenticación
+  // 1) Verificar auth y rol=admin
   if (!req.user) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
@@ -94,7 +83,7 @@ router.get('/', (req, res) => {
   }
   const offset = (page - 1) * limit;
 
-  // 3) Contar logs totales
+  // 3) Contar total de logs
   db.get(`SELECT COUNT(*) as total FROM usageLogs`, (errCount, rowCount) => {
     if (errCount) {
       console.error('Error counting usage logs:', errCount);
@@ -103,7 +92,7 @@ router.get('/', (req, res) => {
     const totalLogs = rowCount ? rowCount.total : 0;
     const totalPages = Math.ceil(totalLogs / limit);
 
-    // 4) Seleccionar logs paginados
+    // 4) Seleccionar logs (incluyendo feedback)
     db.all(`
       SELECT
         id,
@@ -113,7 +102,8 @@ router.get('/', (req, res) => {
         inputTokens,
         outputTokens,
         timestamp,
-        latencyMs
+        latencyMs,
+        feedback
       FROM usageLogs
       ORDER BY id DESC
       LIMIT ? OFFSET ?
@@ -123,41 +113,31 @@ router.get('/', (req, res) => {
         return res.status(500).json({ error: 'Database error', details: errLogs.message });
       }
 
-      // 5) Stats de CPU/Memoria
-      const memUsage = process.memoryUsage(); // { rss, heapTotal, heapUsed, external, ... }
-      const cpuUsage = process.cpuUsage();    // { user, system } microsegundos => del proceso
-      const loadAvg = os.loadavg();           // [1, 5, 15]
+      // 5) Calcular stats (CPU/Mem)
+      const memUsage = process.memoryUsage(); // { rss, heapTotal, heapUsed... }
+      const cpuUsage = process.cpuUsage();    // { user, system } en microseg
+      const loadAvg = os.loadavg();           // [1,5,15]
       const totalMem = os.totalmem();
       const freeMem = os.freemem();
       const cpuCount = os.cpus().length;
 
-      // a) Memoria del sistema
+      // Memoria global
       const systemUsedMem = totalMem - freeMem;
       const systemUsedMemPercent = totalMem > 0
         ? (systemUsedMem / totalMem) * 100
         : 0;
 
-      // b) CPU del proceso en microsegundos => user vs system (acumulado)
-      const totalCpuMicro = cpuUsage.user + cpuUsage.system;
-      let userPercent = 0, systemPercent = 0;
-      if (totalCpuMicro > 0) {
-        userPercent = (cpuUsage.user / totalCpuMicro) * 100;
-        systemPercent = (cpuUsage.system / totalCpuMicro) * 100;
-      }
-
-      // c) loadAvg1mPercent (opcional)
+      // loadAvg1m as % (aprox)
       const loadAvg1mPercent = cpuCount > 0
         ? (loadAvg[0] / cpuCount) * 100
         : 0;
 
-      // d) CPU usage total al estilo "htop" => leer /proc/stat, comparar con la lectura previa
       const cpuUtilPercent = getCpuUsagePercent();
 
-      // 6) Revisar disco con df -k /
+      // Leer disco con df -k /
       let diskUsage = null;
       try {
         const dfOutput = execSync('df -k /').toString();
-        // lines[0] => encabezado, lines[1] => /dev/sda1 1K-blocks used available ...
         const lines = dfOutput.trim().split('\n');
         if (lines.length > 1) {
           const cols = lines[1].split(/\s+/);
@@ -181,44 +161,33 @@ router.get('/', (req, res) => {
         }
       } catch (errDisk) {
         console.error('Error running df -k /:', errDisk);
-        // diskUsage = null
       }
 
-      // 7) stats final
       const stats = {
-        // Memoria proceso
         processMemory: {
           rss: memUsage.rss,
           heapTotal: memUsage.heapTotal,
           heapUsed: memUsage.heapUsed,
-          external: memUsage.external
+          external: memUsage.external,
         },
-        // CPU proceso (acumulado)
         processCpu: {
           user: cpuUsage.user,
           system: cpuUsage.system,
-          userPercent,
-          systemPercent
         },
-        // CPU usage total (estilo htop)
-        cpuUtilPercent,  // <--- Este es el "grande"
-        // Load average
+        cpuUtilPercent,  // total CPU style "htop"
         systemLoad: loadAvg,      // [1,5,15]
-        loadAvg1mPercent,         // ~ saturación en 1m
-        // Memoria del sistema
+        loadAvg1mPercent,
         systemMemory: {
           totalMem,
           freeMem,
           usedMem: systemUsedMem,
           usedPercent: systemUsedMemPercent
         },
-        // CPU count
         cpuCount,
-        // Disco
         diskUsage
       };
 
-      // 8) “Queries by user, grouped by day”
+      // 8) Graph: Queries by user, grouped by day
       db.all(`
         SELECT
           DATE(timestamp) AS day,
@@ -233,7 +202,7 @@ router.get('/', (req, res) => {
           return res.status(500).json({ error: 'Database error', details: errGraph.message });
         }
 
-        // 9) “Tokens in-out by hour”
+        // 9) TokensHourly
         db.all(`
           SELECT
             strftime('%Y-%m-%d %H:00', timestamp) AS hour,
@@ -248,7 +217,7 @@ router.get('/', (req, res) => {
             return res.status(500).json({ error: 'Database error', details: errTokens.message });
           }
 
-          // 10) Latencia (por request)
+          // 10) Latency
           db.all(`
             SELECT
               timestamp,
@@ -261,7 +230,7 @@ router.get('/', (req, res) => {
               return res.status(500).json({ error: 'Database error', details: errLatency.message });
             }
 
-            // 11) Respuesta final
+            // Respuesta final
             return res.json({
               logs,
               stats,

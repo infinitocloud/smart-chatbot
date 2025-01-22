@@ -3,7 +3,6 @@ const express = require('express');
 const router = express.Router();
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./users.db');
-
 const { TextDecoder } = require('util');
 const { Buffer } = require('buffer');
 const {
@@ -11,25 +10,26 @@ const {
   InvokeAgentCommand
 } = require('@aws-sdk/client-bedrock-agent-runtime');
 
+//
+// 1) POST /  => Invocar chatbot + streaming SSE
+//
 router.post('/', async (req, res) => {
   console.log('POST /smart-chatbot => body:', req.body);
 
   const startTime = Date.now();
-
-  // userId sacado de JWT
   const { userId } = req.user || {};
-
-  // Solo userPrompt, sin systemPrompt
   const { userPrompt, sessionId } = req.body || {};
+
   if (!userPrompt || !userPrompt.trim()) {
     return res.status(400).json({ error: 'userPrompt is required' });
   }
 
   try {
-    // 1) Carga config
+    // Leer settings => bedrock
     const settings = await new Promise((resolve, reject) => {
       db.get(`
-        SELECT agentRealId, agentAliasId, awsAccessKeyId, awsSecretAccessKey
+        SELECT agentRealId, agentAliasId,
+               awsAccessKeyId, awsSecretAccessKey
         FROM settings
         LIMIT 1
       `, (err, row) => {
@@ -41,12 +41,7 @@ router.post('/', async (req, res) => {
     if (!settings) {
       return res.status(400).json({ error: 'No bedrock settings found.' });
     }
-    const {
-      agentRealId,
-      agentAliasId,
-      awsAccessKeyId,
-      awsSecretAccessKey
-    } = settings;
+    const { agentRealId, agentAliasId, awsAccessKeyId, awsSecretAccessKey } = settings;
 
     if (!agentRealId || !agentAliasId) {
       return res.status(400).json({ error: 'No agentId/agentAliasId in settings' });
@@ -55,9 +50,8 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'AWS credentials missing in settings' });
     }
 
-    console.log(`UserID=${userId || '(unknown)'} => agentId=${agentRealId}, aliasId=${agentAliasId}`);
+    console.log(`${new Date().toISOString()} - userId=${userId || '(unknown)'}, agentId=${agentRealId}, aliasId=${agentAliasId}`);
 
-    // 2) Creamos client
     const agentRuntime = new BedrockAgentRuntimeClient({
       region: 'us-east-1',
       credentials: {
@@ -66,99 +60,89 @@ router.post('/', async (req, res) => {
       }
     });
 
-    // 3) sessionId
     const finalSessionId = sessionId || `sess-${Date.now()}`;
-
-    // 4) finalPrompt => sin systemPrompt, si deseas un “Human:…” formateado, hazlo:
     const finalPrompt = `Human: ${userPrompt}\nAssistant:`;
 
-    console.log('Final prompt =>\n', finalPrompt);
-
-    // 5) Invocar con streaming
+    // Preparamos el comando => streaming
     const command = new InvokeAgentCommand({
       agentId: agentRealId,
       agentAliasId,
       sessionId: finalSessionId,
-      inputText: finalPrompt, 
-      enableResponseStreaming: true,  // streaming
-      enableTrace: true               // logs tokens usage
+      inputText: finalPrompt,
+      enableResponseStreaming: true,
+      enableTrace: true
     });
 
-    console.log(`Invoking agent: ${agentRealId}/${agentAliasId}, session=${finalSessionId}, streaming=true`);
-
+    console.log(`${new Date().toISOString()} - Invoking agent: ${agentRealId}/${agentAliasId}, session=${finalSessionId}, streaming=true`);
     const response = await agentRuntime.send(command);
-    console.log('Agent raw response =>', JSON.stringify(response, null, 2));
+    console.log(`${new Date().toISOString()} - Agent response streaming initiated`);
+
+    // SSE headers
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Credentials': 'true'
+    });
 
     let finalAnswer = '';
     let usage = { inputTokens: 0, outputTokens: 0 };
 
     const messageStream = response?.completion?.options?.messageStream;
-    const utf8Decoder = new TextDecoder('utf-8');
+    if (!messageStream) {
+      console.log(`${new Date().toISOString()} - No streaming available. Check Bedrock config.`);
+    } else {
+      console.log(`${new Date().toISOString()} - Streaming is active.`);
 
-    if (messageStream) {
-      console.log('=== Receiving streamed content... ===');
-
+      // Leer chunks
       for await (const chunk of messageStream) {
         if (chunk?.body && typeof chunk.body === 'object') {
           const byteArray = new Uint8Array(Object.values(chunk.body));
-          const chunkStr = utf8Decoder.decode(byteArray);
+          const chunkStr = new TextDecoder('utf-8').decode(byteArray);
+
           try {
             const parsed = JSON.parse(chunkStr);
-
-            // usage
+            // Extraer usage
             const usageObj = parsed?.trace?.orchestrationTrace?.modelInvocationOutput?.metadata?.usage;
             if (usageObj) {
-              usage = {
-                inputTokens: usageObj.inputTokens || 0,
-                outputTokens: usageObj.outputTokens || 0
-              };
-              console.log('Detected usage stats =>', usage);
+              usage.inputTokens = usageObj.inputTokens || 0;
+              usage.outputTokens = usageObj.outputTokens || 0;
             }
 
-            // finalResponse
-            const finalResp = parsed?.trace?.orchestrationTrace?.observation?.finalResponse?.text;
-            if (finalResp) {
-              finalAnswer = finalResp;
-              console.log('Detected finalResponse =>', finalAnswer);
-            }
-
-            // parse chunk => subParsed
+            // Extraer contenido
             if (parsed.bytes) {
               const asBuffer = Buffer.from(parsed.bytes, 'base64');
-              const decodedText = utf8Decoder.decode(asBuffer);
+              const decodedText = new TextDecoder('utf-8').decode(asBuffer);
               try {
                 const subParsed = JSON.parse(decodedText);
-                if (subParsed.content && !finalResp) {
+                if (subParsed.content) {
                   finalAnswer += subParsed.content;
+                  console.log(`${new Date().toISOString()} - Sending chunk =>`, subParsed.content);
+                  res.write(`data: ${JSON.stringify({ assistantContent: subParsed.content })}\n\n`);
                 }
-                console.log('Decoded chunk =>', subParsed.content || decodedText);
               } catch {
-                console.log('Decoded chunk =>', decodedText);
+                // no era JSON => texto plano
+                finalAnswer += decodedText;
+                console.log(`${new Date().toISOString()} - Sending raw =>`, decodedText);
+                res.write(`data: ${JSON.stringify({ assistantContent: decodedText })}\n\n`);
               }
-            } else if (parsed.content && !finalResp) {
+            } else if (parsed.content) {
               finalAnswer += parsed.content;
-              console.log('parsed.content =>', parsed.content);
+              console.log(`${new Date().toISOString()} - Sending chunk =>`, parsed.content);
+              res.write(`data: ${JSON.stringify({ assistantContent: parsed.content })}\n\n`);
             }
-          } catch {
-            console.log('DEBUG chunkStr =>', chunkStr);
+          } catch (parseErr) {
+            console.log(`${new Date().toISOString()} - Error parsing chunk:`, parseErr, ', raw:', chunkStr);
           }
         }
       }
-    } else {
-      if (response.generatedText) {
-        finalAnswer = response.generatedText;
-      } else {
-        finalAnswer = '(No streamed content or generatedText found)';
-      }
     }
 
-    console.log('=== Final Assembled Answer ===', finalAnswer);
-
-    // latencia
+    // Fin streaming => Insert usageLogs
     const endTime = Date.now();
     const latencyMs = endTime - startTime;
 
-    // logs usage
     const username = await new Promise((resolve) => {
       db.get(`SELECT name FROM users WHERE id = ?`, [userId], (err, row) => {
         if (err || !row) return resolve('(unknown user)');
@@ -167,39 +151,74 @@ router.post('/', async (req, res) => {
     });
 
     db.run(`
-      INSERT INTO usageLogs (userId, username, prompt, inputTokens, outputTokens, latencyMs)
+      INSERT INTO usageLogs (
+        userId, username, prompt,
+        inputTokens, outputTokens,
+        latencyMs
+      )
       VALUES (?, ?, ?, ?, ?, ?)
     `,
-    [ 
+    [
       userId || null,
       username,
-      userPrompt, // Solo el userPrompt
+      userPrompt,
       usage.inputTokens,
       usage.outputTokens,
       latencyMs
     ],
-    (err) => {
+    function(err) {
       if (err) {
         console.error('Error inserting usage log:', err);
+        // Aun así terminamos SSE
+        res.end();
       } else {
-        console.log(`Usage log => userId=${userId}, prompt="${userPrompt}", usage=(${usage.inputTokens}/${usage.outputTokens}), latencyMs=${latencyMs}`);
+        const usageLogId = this.lastID;
+        console.log(`${new Date().toISOString()} - usageLogs => ID=${usageLogId}, userId=${userId}, prompt="${userPrompt}" (usage in/out = ${usage.inputTokens}/${usage.outputTokens}, lat=${latencyMs}ms)`);
+
+        // Enviamos un último SSE con usageLogId
+        res.write(`data: ${JSON.stringify({ done: true, usageLogId })}\n\n`);
+        // Terminamos SSE
+        res.end();
       }
     });
 
-    // Devolver la respuesta final
-    return res.json({
-      message: 'OK from /smart-chatbot (Agent streaming no systemPrompt)',
-      sessionId: finalSessionId,
-      assistantContent: finalAnswer
-    });
-
   } catch (error) {
-    console.error('Error calling AgentRuntime:', error);
-    return res.status(500).json({
-      error: 'Error calling AgentRuntime',
-      details: error.message
-    });
+    console.error(`${new Date().toISOString()} - Error calling AgentRuntime:`, error);
+    // Enviar SSE con error
+    res.write(`data: ${JSON.stringify({ error: 'Error calling AgentRuntime', details: error.message })}\n\n`);
+    res.end();
   }
+});
+
+//
+// 2) POST /feedback => Actualizar usageLogs.feedback
+//
+router.post('/feedback', (req, res) => {
+  const { userId } = req.user; // authenticateToken => user con userId
+  const { usageLogId, feedback } = req.body || {};
+
+  console.log('POST /smart-chatbot/feedback =>', { userId, usageLogId, feedback });
+
+  if (!usageLogId || !feedback) {
+    return res.status(400).json({ error: 'usageLogId and feedback are required.' });
+  }
+
+  db.run(`
+    UPDATE usageLogs
+    SET feedback = ?
+    WHERE id = ?
+  `, [feedback, usageLogId], function(err) {
+    if (err) {
+      console.error('Error updating usageLogs feedback:', err);
+      return res.status(500).json({ error: 'Database error updating feedback' });
+    }
+    if (this.changes === 0) {
+      console.log('No usageLog row found with id=', usageLogId);
+      return res.status(404).json({ error: 'usageLogId not found' });
+    }
+    console.log(`Feedback updated => usageLogId=${usageLogId}, feedback=${feedback}`);
+    return res.json({ status: 'ok', message: 'Feedback updated' });
+  });
 });
 
 module.exports = router;

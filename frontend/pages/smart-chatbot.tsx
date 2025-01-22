@@ -4,79 +4,72 @@ import { useEffect, useState, useRef } from 'react';
 import { useAuth } from '../components/AuthProvider';
 import { useRouter } from 'next/router';
 import AdminLayout from '../components/AdminLayout';
-import { myFetch } from '../utils/myFetch'; // tu helper de fetch
+import { myFetch } from '../utils/myFetch';
 
 type Message =
-  | { role: 'user'; text: string }
-  | { role: 'bot'; text: string };
+  | { role: 'user'; text: string; copied?: boolean }
+  | { role: 'bot'; text: string; copied?: boolean; id?: string; feedback?: 'like' | 'dislike' };
 
 interface QuickChatButton {
   buttonName: string;
 }
 
-export default function ChatPage() {
-  const { token, role } = useAuth();
+export default function SmartChatbotPage() {
+  const { token } = useAuth();
   const router = useRouter();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [userInput, setUserInput] = useState('');
   const [isSending, setIsSending] = useState(false);
 
-  // Manejo de Quick Chat Buttons
   const [quickChatButtons, setQuickChatButtons] = useState<QuickChatButton[]>([]);
-  const [qcbLoading, setQcbLoading] = useState(true); // ← para saber si aún se están cargando
+  const [qcbLoading, setQcbLoading] = useState(true);
 
-  // Referencias para scroll
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Refs para scroll del chat
   const containerRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const [showScrollDown, setShowScrollDown] = useState(false);
 
-  // 1) Scroll automático al final cada vez que cambian `messages` o `isSending`
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-  }, [messages, isSending]);
+  // “More” => carrusel 2 filas
+  const [isExpanded, setIsExpanded] = useState(false);
+  const carouselRef = useRef<HTMLDivElement>(null);
 
-  // 2) Redirigir a login si no hay token
+  // Scroll del carrusel
+  const scrollLeft = () => {
+    carouselRef.current && (carouselRef.current.scrollLeft -= 200);
+  };
+  const scrollRight = () => {
+    carouselRef.current && (carouselRef.current.scrollLeft += 200);
+  };
+
+  // Redirigir si no hay token
   useEffect(() => {
     if (!token) {
       router.push('/');
     }
   }, [token, router]);
 
-  // 3) Cargar QuickChatButtons una sola vez al montar
+  // Cargar QuickChatButtons
   useEffect(() => {
     if (!token) return;
     fetchQuickChatButtons();
   }, [token]);
 
   async function fetchQuickChatButtons() {
-    setQcbLoading(true); // empezamos la carga
+    setQcbLoading(true);
     const result = await myFetch('/admin/quick-chat-buttons', { method: 'GET' });
-    setQcbLoading(false); // terminamos la carga
+    setQcbLoading(false);
 
     if (result.status === 'error') {
-      // Si hubo un 401/403, myFetch ya hizo logout + alert
       console.log('QuickChatButtons error:', result.message);
       return;
     }
-
-    // status:'ok'
     if (Array.isArray(result.data)) {
       setQuickChatButtons(result.data);
     }
   }
 
-  // 4) Mostrar el botón “↓” si el usuario se aleja del final
-  function handleScroll() {
-    if (!containerRef.current) return;
-    const el = containerRef.current;
-    const pos = el.scrollTop + el.clientHeight;
-    const height = el.scrollHeight;
-    const nearBottom = (height - pos) <= 200;
-    setShowScrollDown(!nearBottom);
-  }
-
-  // 5) Listener de scroll
+  // Scroll en el contenedor principal
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -87,22 +80,34 @@ export default function ChatPage() {
     };
   }, []);
 
-  // 6) Bajar manualmente
+  function handleScroll() {
+    if (!containerRef.current) return;
+    const el = containerRef.current;
+    const pos = el.scrollTop + el.clientHeight;
+    const height = el.scrollHeight;
+    const nearBottom = (height - pos) <= 200;
+    setShowScrollDown(!nearBottom);
+  }
+
   function scrollToBottom() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   }
 
-  // 7) Enviar userInput => llama a myFetch
+  // Auto-scroll cuando cambian messages
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+  }, [messages, isSending]);
+
+  // =========== Enviar un mensaje ===========
   const sendMessage = async () => {
     if (!userInput.trim() || isSending) return;
     setIsSending(true);
 
-    // Añadimos mensaje del usuario
     const userMsg: Message = { role: 'user', text: userInput };
     setMessages((prev) => [...prev, userMsg]);
     setUserInput('');
 
-    // Llamada con myFetch
+    // Llamada al backend
     const result = await myFetch('/api/smart-chatbot', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -115,14 +120,20 @@ export default function ChatPage() {
       return;
     }
 
-    // Éxito
-    // <-- CAMBIO: usamos 'const finalText' en una sola línea
+    // Capturar texto final
     const finalText = (result.data.assistantContent || '(No rawResponse)').trim();
-    setMessages((prev) => [...prev, { role: 'bot', text: finalText }]);
+    const usageLogId = result.data.usageLogId;
+
+    const newBotMsg: Message = { role: 'bot', text: finalText };
+    if (usageLogId) {
+      newBotMsg.id = String(usageLogId);
+    }
+
+    setMessages((prev) => [...prev, newBotMsg]);
     setIsSending(false);
   };
 
-  // 8) Botón rápido => userPrompt = btn.buttonName
+  // =========== Quick Chat => userPrompt ===========
   const handleQuickButtonClick = async (btn: QuickChatButton) => {
     if (isSending) return;
 
@@ -142,38 +153,151 @@ export default function ChatPage() {
       return;
     }
 
-    // <-- CAMBIO: lo mismo aquí
     const finalText = (result.data.assistantContent || '(No rawResponse)').trim();
-    setMessages((prev) => [...prev, { role: 'bot', text: finalText }]);
+    const usageLogId = result.data.usageLogId;
+
+    const newBotMsg: Message = { role: 'bot', text: finalText };
+    if (usageLogId) {
+      newBotMsg.id = String(usageLogId);
+    }
+
+    setMessages((prev) => [...prev, newBotMsg]);
     setIsSending(false);
   };
 
-  // 9) Enter => enviar
+  // =========== Enter => enviar ===========
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !isSending) {
       sendMessage();
     }
   };
 
-  // Render principal
+  // =========== Copiar con fallback ===========
+  function copyToClipboard(msg: Message, index: number) {
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(msg.text)
+        .then(() => {
+          console.log('Copied (modern):', msg.text);
+          markAsCopied(index);
+        })
+        .catch((err) => {
+          console.error('Clipboard API error:', err);
+          fallbackCopy(msg.text, index);
+        });
+    } else {
+      fallbackCopy(msg.text, index);
+    }
+  }
+
+  function fallbackCopy(text: string, index: number) {
+    try {
+      const textArea = document.createElement('textarea');
+      textArea.value = text;
+      textArea.style.position = 'fixed';
+      textArea.style.left = '-9999px';
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      console.log('Copied (fallback):', text);
+      markAsCopied(index);
+    } catch (err) {
+      console.error('fallbackCopy => error:', err);
+    }
+  }
+
+  function markAsCopied(i: number) {
+    setMessages((prev) => {
+      const newArr = [...prev];
+      newArr[i] = { ...newArr[i], copied: true };
+      return newArr;
+    });
+  }
+
+  // =========== Like / Dislike => feedback ===========
+  async function handleLike(botMsg: Message, index: number) {
+    console.log('Like =>', botMsg.text);
+    try {
+      const usageLogId = botMsg.id;
+      if (!usageLogId) {
+        console.log('No usageLogId => ignoring Like');
+        return;
+      }
+
+      const feedbackResult = await myFetch('/api/smart-chatbot/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          usageLogId,
+          feedback: 'like',
+        }),
+      });
+      console.log('Like => feedbackResult:', feedbackResult);
+
+      // Al llegar aquí, asumimos que se guardó bien => marcamos feedback='like'
+      setMessages((prev) => {
+        const newArr = [...prev];
+        const oldMsg = newArr[index];
+        // Mantenemos el resto y solo asignamos feedback='like'
+        newArr[index] = { ...oldMsg, feedback: 'like' };
+        return newArr;
+      });
+
+    } catch (error) {
+      console.error('Like => error:', error);
+    }
+  }
+
+  async function handleDislike(botMsg: Message, index: number) {
+    console.log('Dislike =>', botMsg.text);
+    try {
+      const usageLogId = botMsg.id;
+      if (!usageLogId) {
+        console.log('No usageLogId => ignoring Dislike');
+        return;
+      }
+
+      const feedbackResult = await myFetch('/api/smart-chatbot/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          usageLogId,
+          feedback: 'dislike',
+        }),
+      });
+      console.log('Dislike => feedbackResult:', feedbackResult);
+
+      // Marcamos feedback='dislike'
+      setMessages((prev) => {
+        const newArr = [...prev];
+        const oldMsg = newArr[index];
+        newArr[index] = { ...oldMsg, feedback: 'dislike' };
+        return newArr;
+      });
+
+    } catch (error) {
+      console.error('Dislike => error:', error);
+    }
+  }
+
   const hasMessages = messages.length > 0;
 
   return (
-    <AdminLayout userRole={role} activeMenu="Smart Chatbot">
-      <div className="flex flex-col h-full w-full">
-        {/* Contenedor scrolleable */}
+    <AdminLayout>
+      <div className="flex flex-col h-full w-full overflow-x-hidden">
         <div
           ref={containerRef}
           className="flex-1 min-h-0 overflow-auto flex flex-col items-center"
         >
           <div className="w-full max-w-3xl flex flex-col flex-1">
             {!hasMessages ? (
-              // ================== MODO SIN MENSAJES ==================
+              // ====================== MODO SIN MENSAJES ======================
               <div className="flex-1 flex flex-col items-center justify-center p-4">
                 <h1 className="text-3xl font-bold text-center mb-6">
                   How can I help you?
                 </h1>
                 <div className="w-full max-w-2xl">
+                  {/* Input */}
                   <div className="relative flex items-center mb-4">
                     <input
                       className="flex-1 bg-gray-50 border border-gray-300 rounded-full px-4 py-3
@@ -194,14 +318,19 @@ export default function ChatPage() {
                     </button>
                   </div>
 
+                  {/* Quick Chat Buttons => sin mensajes */}
                   {!qcbLoading && quickChatButtons.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-2 justify-center">
                       {quickChatButtons.map((btn, idx) => (
                         <button
                           key={idx}
                           onClick={() => handleQuickButtonClick(btn)}
-                          className="px-3 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300
-                                     focus:outline-none focus:ring-2 focus:ring-gray-400"
+                          className="
+                            px-3 py-1
+                            rounded bg-gray-200 text-gray-800 hover:bg-gray-300
+                            focus:outline-none focus:ring-2 focus:ring-gray-400
+                            whitespace-normal break-words text-sm
+                          "
                         >
                           {btn.buttonName}
                         </button>
@@ -211,9 +340,9 @@ export default function ChatPage() {
                 </div>
               </div>
             ) : (
-              // ============== MODO CON MENSAJES ==============
+              // ====================== MODO CON MENSAJES ======================
               <>
-                <div className="p-4 space-y-4 flex-1 overflow-auto">
+                <div className="p-4 space-y-4 flex-1 overflow-auto w-full">
                   {messages.map((msg, i) => {
                     const isUser = msg.role === 'user';
                     const bubbleAlignment = isUser ? 'justify-end' : 'justify-start';
@@ -226,15 +355,59 @@ export default function ChatPage() {
                         <div
                           className={`${bubbleStyle} p-3 rounded-lg whitespace-pre-wrap text-gray-800`}
                         >
+                          {/* Texto del mensaje */}
                           {msg.text}
+
+                          {/* Bot => 3 botones => solo si es bot */}
+                          {!isUser && (
+                            <div className="flex items-center gap-2 mt-2 text-sm text-gray-600">
+                              {/* Copy => ícono copy / check */}
+                              <button
+                                onClick={() => copyToClipboard(msg, i)}
+                                className="px-2 py-1 bg-gray-100 rounded hover:bg-gray-200"
+                              >
+                                {msg.copied
+                                  ? <i className="fa-solid fa-check"></i>
+                                  : <i className="fa-solid fa-copy"></i>
+                                }
+                              </button>
+
+                              {/* Like => thumbs-up (colorear si feedback='like') */}
+                              <button
+                                onClick={() => handleLike(msg, i)}
+                                className="px-2 py-1 bg-gray-100 rounded hover:bg-gray-200"
+                              >
+                                <i
+                                  className="fa-solid fa-thumbs-up"
+                                  style={{
+                                    color: msg.feedback === 'like' ? '#3B82F6' : 'inherit'
+                                  }}
+                                />
+                              </button>
+
+                              {/* Dislike => thumbs-down (colorear si feedback='dislike') */}
+                              <button
+                                onClick={() => handleDislike(msg, i)}
+                                className="px-2 py-1 bg-gray-100 rounded hover:bg-gray-200"
+                              >
+                                <i
+                                  className="fa-solid fa-thumbs-down"
+                                  style={{
+                                    color: msg.feedback === 'dislike' ? '#dc3545' : 'inherit'
+                                  }}
+                                />
+                              </button>
+                            </div>
+                          )}
                         </div>
                       </div>
                     );
                   })}
 
+                  {/* Indicador de “isSending” */}
                   {isSending && (
                     <div className="flex flex-col items-center text-gray-600">
-                      <div className="mb-1">Processing...</div>
+                      <div className="mb-1">Thinking...</div>
                       <div className="flex items-center space-x-1">
                         <div className="h-2 w-2 bg-gray-500 rounded-full animate-bounce" />
                         <div className="h-2 w-2 bg-gray-500 rounded-full animate-bounce [animation-delay:0.2s]" />
@@ -242,12 +415,81 @@ export default function ChatPage() {
                       </div>
                     </div>
                   )}
-
                   <div ref={messagesEndRef} />
                 </div>
 
-                {/* Barra de input al fondo */}
-                <div className="shrink-0 p-2 bg-white pb-14 md:pb-4">
+                {/* Barra inferior => carrusel de 2 filas + input */}
+                <div className="shrink-0 p-2 bg-white pb-14 md:pb-4 w-full">
+                  {!qcbLoading && quickChatButtons.length > 0 && (
+                    <div className="mb-2">
+                      {/* Botón More / Hide */}
+                      <div className="flex justify-end">
+                        <button
+                          onClick={() => setIsExpanded(!isExpanded)}
+                          className="px-3 py-2 bg-blue-500 text-white rounded"
+                        >
+                          {isExpanded ? 'Hide' : 'More'}
+                        </button>
+                      </div>
+
+                      {isExpanded && (
+                        <div className="relative mt-3 w-full box-border overflow-hidden">
+                          {/* Flecha Izquierda */}
+                          <button
+                            onClick={scrollLeft}
+                            className="
+                              absolute left-2 top-1/2 -translate-y-1/2 z-10
+                              bg-gray-300 hover:bg-gray-400
+                              rounded-full w-10 h-10
+                              flex items-center justify-center
+                            "
+                          >
+                            <i className="fa-solid fa-chevron-left"></i>
+                          </button>
+
+                          {/* Flecha Derecha */}
+                          <button
+                            onClick={scrollRight}
+                            className="
+                              absolute right-2 top-1/2 -translate-y-1/2 z-10
+                              bg-gray-300 hover:bg-gray-400
+                              rounded-full w-10 h-10
+                              flex items-center justify-center
+                            "
+                          >
+                            <i className="fa-solid fa-chevron-right"></i>
+                          </button>
+
+                          {/* 2 filas con scroll horizontal */}
+                          <div
+                            ref={carouselRef}
+                            className="w-full overflow-x-auto px-2"
+                            style={{ scrollBehavior: 'smooth' }}
+                          >
+                            <div className="grid grid-rows-2 grid-flow-col gap-2 py-2">
+                              {quickChatButtons.map((btn, idx) => (
+                                <button
+                                  key={idx}
+                                  onClick={() => handleQuickButtonClick(btn)}
+                                  className="
+                                    px-3 py-2
+                                    rounded bg-gray-200 text-gray-800
+                                    hover:bg-gray-300 focus:outline-none
+                                    focus:ring-2 focus:ring-gray-400
+                                    whitespace-nowrap
+                                  "
+                                >
+                                  {btn.buttonName}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Input */}
                   <div className="relative flex items-center">
                     <input
                       className="flex-1 bg-gray-50 border border-gray-300 rounded-full px-4 py-3
@@ -274,7 +516,7 @@ export default function ChatPage() {
         </div>
       </div>
 
-      {/* Botón flotante “↓” => si showScrollDown es true */}
+      {/* Botón flotante “Scroll to bottom” */}
       {showScrollDown && (
         <button
           onClick={scrollToBottom}

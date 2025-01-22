@@ -1,4 +1,5 @@
 // fileUploadManager.js
+
 const express = require('express');
 const multer = require('multer');
 const multerS3 = require('multer-s3');
@@ -7,23 +8,14 @@ const path = require('path');
 
 const router = express.Router();
 
-/**
- * Quita el prefijo "s3://" y cualquier "/" final para normalizar el bucket.
- * Ejemplos:
- *   "s3://test-smart-chatbot/" => "test-smart-chatbot"
- *   "s3://my-bucket"          => "my-bucket"
- *   "my-bucket"               => "my-bucket"
- */
 function normalizeBucketName(rawBucket) {
   if (!rawBucket) return '';
   let bucket = rawBucket.trim();
 
-  // Quitar prefijo s3:// si existe
   if (bucket.toLowerCase().startsWith('s3://')) {
     bucket = bucket.substring(5);
   }
 
-  // Quitar último slash si existe
   if (bucket.endsWith('/')) {
     bucket = bucket.slice(0, -1);
   }
@@ -31,10 +23,9 @@ function normalizeBucketName(rawBucket) {
   return bucket;
 }
 
-// Función para configurar multer + S3
 function createMulterUpload(s3Config) {
   const normalizedBucket = normalizeBucketName(s3Config.awsS3Bucket);
-  console.log('Using bucket:', normalizedBucket); // No imprimimos credenciales
+  console.log('Using bucket:', normalizedBucket);
 
   const s3Client = new S3Client({
     region: 'us-east-1',
@@ -50,12 +41,12 @@ function createMulterUpload(s3Config) {
       bucket: normalizedBucket,
       key: function (req, file, cb) {
         console.log(`Uploading file with original name: "${file.originalname}"`);
-        cb(null, file.originalname);
+        cb(null, file.originalname); // Use the original file name
       }
     }),
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB máx
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max per file
     fileFilter: function (req, file, cb) {
-      const allowedTypes = /pdf|doc|docx|html|xls|xlsx|csv/i;
+      const allowedTypes = /pdf|doc|docx|html|xls|xlsx|csv|txt/i;
       const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
       const mimetype = allowedTypes.test(file.mimetype.toLowerCase());
 
@@ -66,7 +57,7 @@ function createMulterUpload(s3Config) {
       if (extname && mimetype) {
         cb(null, true);
       } else {
-        const errMsg = `Only PDF, DOC, DOCX, HTML, XLS, XLSX, and CSV files are allowed! (Got ext="${path.extname(
+        const errMsg = `Only PDF, DOC, DOCX, HTML, XLS, XLSX, CSV, and TXT files are allowed! (Got ext="${path.extname(
           file.originalname
         )}", mimetype="${file.mimetype}")`;
         console.error(errMsg);
@@ -76,18 +67,14 @@ function createMulterUpload(s3Config) {
   });
 }
 
-// POST /
 router.post('/', (req, res) => {
   console.log('POST /file-upload-manager');
 
   try {
-    // Tomamos credenciales desde req.user (asignadas por loadBedrockSettings)
     const { awsAccessKeyId, awsSecretAccessKey, awsS3Bucket } = req.user || {};
 
-    // Log mínimo: solo el bucket
     console.log('Using AWS S3 Bucket:', awsS3Bucket || '(not configured)');
 
-    // Validamos config
     if (!awsAccessKeyId || !awsSecretAccessKey) {
       console.warn('AWS credentials missing in settings.');
       return res.status(400).json({ error: 'AWS credentials are missing in settings.' });
@@ -104,31 +91,29 @@ router.post('/', (req, res) => {
       awsS3Bucket
     };
 
-    // Creamos el middleware de Multer
     const uploadMiddleware = createMulterUpload(s3Config);
 
-    // Procesamos el archivo con "single('file')"
-    uploadMiddleware.single('file')(req, res, (err) => {
+    uploadMiddleware.array('file', 20)(req, res, (err) => {
       if (err instanceof multer.MulterError) {
-        // Error de multer (ej. límite de tamaño)
         console.error('MulterError:', err);
         return res.status(400).json({ error: err.message });
       } else if (err) {
-        // Error desconocido
         console.error('Unknown upload error:', err);
         return res.status(500).json({ error: err.message });
       }
 
-      // Si llega aquí => fue exitoso
-      console.log('Upload successful! File info:', req.file);
+      // If we're here, upload was successful
+      console.log('Upload successful! Files info:', req.files);
       return res.json({
-        message: 'File uploaded successfully',
-        filename: req.file.key,
-        location: req.file.location
+        message: 'Files uploaded successfully',
+        files: req.files.map(file => ({
+          filename: file.key,
+          location: file.location
+        }))
       });
     });
   } catch (error) {
-    console.error('Error uploading file:', error);
+    console.error('Error uploading files:', error);
     return res.status(500).json({
       error: 'Server error during file upload',
       details: error.toString()
@@ -137,4 +122,3 @@ router.post('/', (req, res) => {
 });
 
 module.exports = router;
-

@@ -3,30 +3,29 @@
 ///////////////////////////////////////////////////////////////
 // Importaciones
 ///////////////////////////////////////////////////////////////
-//const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const sqlite3 = require('sqlite3').verbose();
 
-// AWS Bedrock (para /admin/list-agents, etc.)
+// AWS Bedrock
 const {
   BedrockAgentClient,
   ListAgentsCommand,
   ListAgentAliasesCommand
 } = require('@aws-sdk/client-bedrock-agent');
 
-// Routers o archivos locales
+// Routers locales
 const knowledgeBaseManager = require('./knowledgeBaseManager');
 const fileUploadManager = require('./fileUploadManager');
 const smartChatbotManager = require('./smartChatbotManager');
 const monitorRouter = require('./monitorRouter');
 const userManagementRouter = require('./userManagementRouter');
-const settingsRouter = require('./settingsRouter'); // Maneja /admin/settings + /admin/quick-chat-buttons
+const settingsRouter = require('./settingsRouter'); // /admin/settings + quick-chat-buttons
 
 ///////////////////////////////////////////////////////////////
-// Configuración básica de Express
+// Configuración Express
 ///////////////////////////////////////////////////////////////
 const app = express();
 app.use(cors());
@@ -105,7 +104,7 @@ db.run(`
   }
 });
 
-// 3) Tabla 'usageLogs'
+// 3) Tabla 'usageLogs' => con feedback en la definición
 db.run(`
   CREATE TABLE IF NOT EXISTS usageLogs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,23 +114,24 @@ db.run(`
     inputTokens INTEGER,
     outputTokens INTEGER,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    latencyMs INTEGER
+    latencyMs INTEGER,
+    feedback TEXT
   )
 `, (err) => {
   if (err) {
     console.error('Error creating usageLogs table:', err);
   } else {
-    console.log('Ensured "usageLogs" table exists.');
+    console.log('Ensured "usageLogs" table exists (with feedback column).');
   }
 });
 
 ///////////////////////////////////////////////////////////////
 // JWT SECRET
 ///////////////////////////////////////////////////////////////
-const JWT_SECRET = 'supersecretkey'; // para DEMO
+const JWT_SECRET = 'supersecretkey'; // DEMO
 
 ///////////////////////////////////////////////////////////////
-// Middleware 1: authenticateToken
+// Middleware: authenticateToken
 ///////////////////////////////////////////////////////////////
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -152,37 +152,34 @@ function authenticateToken(req, res, next) {
 }
 
 ///////////////////////////////////////////////////////////////
-// Helper para leer la tabla 'settings' en cada request
+// Helper => leer la tabla 'settings'
 ///////////////////////////////////////////////////////////////
 function loadSettingsFromDB() {
   return new Promise((resolve, reject) => {
-    db.get(
-      `SELECT awsAccessKeyId, awsSecretAccessKey, awsS3Bucket, agentRealId, agentAliasId
-       FROM settings
-       LIMIT 1`,
-      (err, row) => {
-        if (err) return reject(err);
-        resolve(row || {});
-      }
-    );
+    db.get(`
+      SELECT awsAccessKeyId, awsSecretAccessKey, awsS3Bucket,
+             agentRealId, agentAliasId
+      FROM settings
+      LIMIT 1
+    `, (err, row) => {
+      if (err) return reject(err);
+      resolve(row || {});
+    });
   });
 }
 
 ///////////////////////////////////////////////////////////////
-// Middleware 2: loadBedrockSettings (SIN CACHE)
+// Middleware => loadBedrockSettings
 ///////////////////////////////////////////////////////////////
 async function loadBedrockSettings(req, res, next) {
   try {
-    // Leemos SIEMPRE la DB de settings
+    // Leemos la DB
     const row = await loadSettingsFromDB();
-
-    // Insertamos en req.user
     req.user.awsAccessKeyId = row.awsAccessKeyId || '';
     req.user.awsSecretAccessKey = row.awsSecretAccessKey || '';
     req.user.awsS3Bucket = row.awsS3Bucket || '';
     req.user.agentRealId = row.agentRealId || '';
     req.user.agentAliasId = row.agentAliasId || '';
-
     next();
   } catch (error) {
     console.error('Error loading bedrock settings:', error);
@@ -191,7 +188,7 @@ async function loadBedrockSettings(req, res, next) {
 }
 
 ///////////////////////////////////////////////////////////////
-// Rutas de USUARIO (REGISTER, LOGIN)
+// Rutas USUARIO (REGISTER, LOGIN)
 ///////////////////////////////////////////////////////////////
 app.post('/api/register', async (req, res) => {
   const { name, email, password } = req.body;
@@ -206,7 +203,8 @@ app.post('/api/register', async (req, res) => {
     const role = (email === 'admin') ? 'admin' : 'user';
 
     db.run(
-      `INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO users (name, email, password_hash, role)
+       VALUES (?, ?, ?, ?)`,
       [name, email, password_hash, role],
       (err2) => {
         if (err2) {
@@ -234,49 +232,39 @@ app.post('/api/login', (req, res) => {
     return res.status(400).json({ error: 'Email and password are required' });
   }
 
-  db.get(
-    `SELECT id, name, email, password_hash, role
-     FROM users
-     WHERE email = ?`,
-    [email],
-    async (err, user) => {
-      if (err) {
-        console.error('Database error on login:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
-      if (!user) {
-        console.log('User not found for:', email);
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
-
-      const match = await bcrypt.compare(password, user.password_hash);
-      if (!match) {
-        console.log('Password mismatch for:', email);
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
-
-      // Create JWT
-      const token = jwt.sign(
-        { userId: user.id, role: user.role },
-        JWT_SECRET,
-        { expiresIn: '1h' }
-      );
-
-      console.log('Login success for:', email);
-      res.json({
-        token,
-        role: user.role,
-        name: user.name
-      });
+  db.get(`
+    SELECT id, name, email, password_hash, role
+    FROM users
+    WHERE email = ?
+  `, [email],
+  async (err, user) => {
+    if (err) {
+      console.error('Database error on login:', err);
+      return res.status(500).json({ error: 'Database error' });
     }
-  );
+    if (!user) {
+      console.log('User not found for:', email);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const match = await bcrypt.compare(password, user.password_hash);
+    if (!match) {
+      console.log('Password mismatch for:', email);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Crear JWT
+    const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
+    console.log('Login success for:', email);
+    res.json({ token, role: user.role, name: user.name });
+  });
 });
 
 ///////////////////////////////////////////////////////////////
-// /admin/list-agents => requiere bedrock settings
+// /admin/list-agents => bedrock
 ///////////////////////////////////////////////////////////////
 app.get('/admin/list-agents', authenticateToken, loadBedrockSettings, async (req, res) => {
-  console.log('GET /admin/list-agents (with aliases included)');
+  console.log('GET /admin/list-agents');
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Forbidden' });
   }
@@ -295,7 +283,6 @@ app.get('/admin/list-agents', authenticateToken, loadBedrockSettings, async (req
       }
     });
 
-    console.log('Calling ListAgentsCommand...');
     const agentsResp = await bedrockAgentClient.send(new ListAgentsCommand({}));
     console.log('ListAgents response:', agentsResp);
 
@@ -333,10 +320,7 @@ app.get('/admin/list-agents', authenticateToken, loadBedrockSettings, async (req
     res.json({ agents: agentsWithAliases });
   } catch (error) {
     console.error('Error listing agents + aliases:', error);
-    res.status(500).json({
-      error: 'Failed to list agents + aliases',
-      details: error.message
-    });
+    res.status(500).json({ error: 'Failed to list agents + aliases', details: error.message });
   }
 });
 
