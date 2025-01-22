@@ -6,8 +6,9 @@ import { useRouter } from 'next/router';
 import AdminLayout from '../components/AdminLayout';
 import { myFetch } from '../utils/myFetch';
 
+// ==================== CAMBIO AQUÍ: Ambas variantes pueden tener `feedback` ====================
 type Message =
-  | { role: 'user'; text: string; copied?: boolean }
+  | { role: 'user'; text: string; copied?: boolean; feedback?: 'like' | 'dislike' }
   | { role: 'bot'; text: string; copied?: boolean; id?: string; feedback?: 'like' | 'dislike' };
 
 interface QuickChatButton {
@@ -36,10 +37,12 @@ export default function SmartChatbotPage() {
 
   // Scroll del carrusel
   const scrollLeft = () => {
-    carouselRef.current && (carouselRef.current.scrollLeft -= 200);
+    if (!carouselRef.current) return;
+    carouselRef.current.scrollLeft -= 200;
   };
   const scrollRight = () => {
-    carouselRef.current && (carouselRef.current.scrollLeft += 200);
+    if (!carouselRef.current) return;
+    carouselRef.current.scrollLeft += 200;
   };
 
   // Redirigir si no hay token
@@ -217,13 +220,16 @@ export default function SmartChatbotPage() {
   // =========== Like / Dislike => feedback ===========
   async function handleLike(botMsg: Message, index: number) {
     console.log('Like =>', botMsg.text);
+
+    // Chequeamos si es un botMsg con id (para mandar al backend),
+    // pero en ambos casos, a nivel de TypeScript, se permite set feedback.
+    if (botMsg.role !== 'bot' || !botMsg.id) {
+      console.log('No usageLogId => ignoring Like');
+      return;
+    }
+
     try {
       const usageLogId = botMsg.id;
-      if (!usageLogId) {
-        console.log('No usageLogId => ignoring Like');
-        return;
-      }
-
       const feedbackResult = await myFetch('/api/smart-chatbot/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -234,11 +240,10 @@ export default function SmartChatbotPage() {
       });
       console.log('Like => feedbackResult:', feedbackResult);
 
-      // Al llegar aquí, asumimos que se guardó bien => marcamos feedback='like'
+      // Marcamos feedback='like' localmente
       setMessages((prev) => {
         const newArr = [...prev];
         const oldMsg = newArr[index];
-        // Mantenemos el resto y solo asignamos feedback='like'
         newArr[index] = { ...oldMsg, feedback: 'like' };
         return newArr;
       });
@@ -250,13 +255,15 @@ export default function SmartChatbotPage() {
 
   async function handleDislike(botMsg: Message, index: number) {
     console.log('Dislike =>', botMsg.text);
+
+    // Igual que en handleLike, verificamos si es “bot”
+    if (botMsg.role !== 'bot' || !botMsg.id) {
+      console.log('No usageLogId => ignoring Dislike');
+      return;
+    }
+
     try {
       const usageLogId = botMsg.id;
-      if (!usageLogId) {
-        console.log('No usageLogId => ignoring Dislike');
-        return;
-      }
-
       const feedbackResult = await myFetch('/api/smart-chatbot/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

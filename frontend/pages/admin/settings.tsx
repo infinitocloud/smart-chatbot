@@ -200,7 +200,7 @@ export default function SettingsPage() {
   if (!token || role !== 'admin') return null;
 
   return (
-    <AdminLayout userRole={role} activeMenu="Settings">
+    <AdminLayout userRole={role}>
       <div className="p-8">
         <h1 className="text-2xl font-bold mb-4">Model &amp; Authentication</h1>
 

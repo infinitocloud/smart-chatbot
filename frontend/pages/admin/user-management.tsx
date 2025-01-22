@@ -181,7 +181,7 @@ export default function UserManagementPage() {
   // 5) Si no es admin => no ver la página
   if (role !== 'admin') {
     return (
-      <AdminLayout userRole={role} activeMenu="User Management">
+      <AdminLayout userRole={role}>
         <div className="p-4">
           <h1 className="text-2xl font-bold mb-4">User Management</h1>
           <p className="text-red-600">You are not authorized to view this page.</p>
@@ -192,7 +192,7 @@ export default function UserManagementPage() {
 
   // 6) Render principal
   return (
-    <AdminLayout userRole={role} activeMenu="User Management">
+    <AdminLayout userRole={role}>
       <div className="p-8 space-y-6">
         <h1 className="text-2xl font-bold">User Management</h1>
 

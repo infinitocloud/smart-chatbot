@@ -404,7 +404,7 @@ export default function MonitorPage() {
   // Si no es admin => no puede ver la página
   if (role !== 'admin') {
     return (
-      <AdminLayout userRole={role} activeMenu="Monitor">
+      <AdminLayout userRole={role}>
         <div className="p-4">
           <h1 className="text-2xl font-bold mb-4">Monitor</h1>
           <p className="text-red-600">You are not authorized to view this page.</p>
@@ -414,7 +414,7 @@ export default function MonitorPage() {
   }
 
   return (
-    <AdminLayout userRole={role} activeMenu="Monitor">
+    <AdminLayout userRole={role}>
       <div className="p-4">
 
         {/* Título "Monitor" + Auto-refresh en la misma línea */}

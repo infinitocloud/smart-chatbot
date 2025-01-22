@@ -7,9 +7,13 @@ import { useAuth } from './AuthProvider';
 
 interface AdminLayoutProps {
   children: React.ReactNode;
+  userRole?: string | null;  // <-- Aceptamos string | null
 }
 
-export default function AdminLayout({ children }: AdminLayoutProps) {
+export default function AdminLayout({
+  children,
+  userRole,
+}: AdminLayoutProps) {
   const { token, role } = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSmallScreen, setIsSmallScreen] = useState(false);
@@ -25,7 +29,10 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     };
   }, []);
 
-  // Pantalla Loading si no hay token/role
+  // Si userRole es undefined, usamos 'role' de Auth; si no, usamos el que venga por prop.
+  const finalRole = userRole ?? role;
+
+  // Loading si no hay token o role es null
   if (!token || role === null) {
     return (
       <div className="h-screen w-full flex items-center justify-center">
@@ -41,10 +48,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         <NavBar />
       </div>
 
-      {/**
-       * Si estamos en mobile y sidebar está cerrado,
-       * mostramos el botón hamburger en un contenedor *debajo* de la navbar.
-       */}
+      {/* Botón hamburger en móvil (solo visible cuando sidebar está cerrado) */}
       {isSmallScreen && !isSidebarOpen && (
         <div className="border-b px-4 py-2">
           <button
@@ -52,7 +56,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             onClick={() => setIsSidebarOpen(true)}
           >
             <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path 
+              <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 strokeWidth={2}
@@ -73,7 +77,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
               setIsSidebarOpen={() => null}
               isPortrait={false}
               isSmallScreen={false}
-              userRole={role}
+              userRole={finalRole}
             />
           </div>
         )}
@@ -94,10 +98,9 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                 setIsSidebarOpen={setIsSidebarOpen}
                 isPortrait={false}
                 isSmallScreen={true}
-                userRole={role}
+                userRole={finalRole}
               />
             </div>
-            {/* Backdrop => cierra overlay al hacer click */}
             {isSidebarOpen && (
               <div
                 className="fixed inset-0 top-[4rem] bg-black bg-opacity-50 z-[9998]"
@@ -107,7 +110,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           </>
         )}
 
-        {/* Contenido principal => min-w-0 para ajustarse */}
+        {/* Contenido principal */}
         <main className="flex-1 min-h-0 flex flex-col min-w-0">
           {children}
         </main>

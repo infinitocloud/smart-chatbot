@@ -9,7 +9,7 @@ interface SidebarProps {
   isSmallScreen: boolean;
   isSidebarOpen: boolean;
   setIsSidebarOpen: (open: boolean) => void;
-  userRole?: string | null;  // 'admin' o usuario normal
+  userRole?: string | null; // 'admin' u otro
 }
 
 export default function Sidebar({
@@ -19,19 +19,20 @@ export default function Sidebar({
   setIsSidebarOpen,
   userRole
 }: SidebarProps) {
+  // ====== Evitar "no-unused-vars" ======
+  // Con 'void' indicamos que estamos "usando" estas variables,
+  // pero no hacemos nada con ellas. Así no salta el warning.
+  void isPortrait;
+  void isSmallScreen;
+  void isSidebarOpen;
 
   const router = useRouter();
-
   const isAdmin = (userRole === 'admin');
 
-  // Esta función decide si un link está activo comparando rutas
   function isActiveRoute(path: string) {
     return router.pathname === path;
-    // O, si tienes rutas anidadas, podrías usar:
-    // return router.pathname.startsWith(path);
   }
 
-  // Componente de item
   function MenuItem({
     href,
     iconClass,
@@ -41,13 +42,9 @@ export default function Sidebar({
     iconClass: string;
     label: string;
   }) {
-    // Si la ruta actual es href => “activo”
     const active = isActiveRoute(href);
-
-    // Clases base
     const baseClasses = 'flex items-center space-x-2 p-2 rounded-md text-base';
     const textColor = 'text-gray-700 hover:text-gray-900';
-    // Si está activo => fondo gris clarito y font semibold
     const bgColor = active ? 'bg-gray-200 font-semibold' : '';
 
     return (
@@ -72,7 +69,7 @@ export default function Sidebar({
           label="Smart Chatbot"
         />
 
-        {/* Solo si usuario es admin */}
+        {/* Solo si el usuario es admin */}
         {isAdmin && (
           <>
             <MenuItem

@@ -157,18 +157,22 @@ export default function KnowledgeBasePage() {
                 throw new Error(uploadRes.message || 'Failed to upload file');
               }
               const uploadData = uploadRes.data || {};
-              const location = uploadData.files ? uploadData.files[0].location : (uploadData.location || (uploadData.locations && uploadData.locations[0]));
+              const location = uploadData.files
+                ? uploadData.files[0].location
+                : (uploadData.location || (uploadData.locations && uploadData.locations[0]));
               if (!location) throw new Error('No location in upload response');
-
-              const urlObj = new URL(location);
-              const bucketName = urlObj.host.split('.')[0];
-              const pathName = urlObj.pathname.startsWith('/') ? urlObj.pathname.substring(1) : urlObj.pathname;
-              const s3Uri = `s3://${bucketName}/${pathName}`;
 
               if (!activeKnowledgeBase) throw new Error('No active KB found to index document');
 
               const dataSourceId = extractDataSourceId(activeKnowledgeBase.dataSource);
               if (!dataSourceId) throw new Error('Could not parse dataSourceId');
+
+              const urlObj = new URL(location);
+              const bucketName = urlObj.host.split('.')[0];
+              const pathName = urlObj.pathname.startsWith('/')
+                ? urlObj.pathname.substring(1)
+                : urlObj.pathname;
+              const s3Uri = `s3://${bucketName}/${pathName}`;
 
               const addDocRes = await myFetch('/admin/knowledge-base-manager', {
                 method: 'POST',
@@ -185,15 +189,21 @@ export default function KnowledgeBasePage() {
                 throw new Error(addDocRes.message || 'Failed to add document');
               }
 
-              return batch[index].name; // Return the file name for success message
+              // Si llegó aquí, se subió y agregó exitosamente => devolver nombre de archivo
+              return batch[index].name;
 
-            } catch (error) {
-              if (error.message.includes('max number of documentLevelAPI request')) {
+            } catch (error: unknown) {
+              // Type guard para acceder a error.message
+              if (
+                error instanceof Error &&
+                error.message.includes('max number of documentLevelAPI request')
+              ) {
                 retries++;
                 const delay = baseDelay * Math.pow(2, retries); // Exponential backoff
                 await new Promise(resolve => setTimeout(resolve, delay));
               } else {
-                throw error; // For other errors, stop retrying
+                // Para otros errores, dejamos de reintentar
+                throw error;
               }
             }
           }
@@ -205,7 +215,10 @@ export default function KnowledgeBasePage() {
 
         const batchErrors = results
           .filter(result => result.status === 'rejected')
-          .map((result, index) => `${batch[index].name}: ${(result as PromiseRejectedResult).reason.message}`);
+          .map(
+            (result, index) =>
+              `${batch[index].name}: ${(result as PromiseRejectedResult).reason.message}`
+          );
 
         if (batchErrors.length > 0) {
           hasErrors = true;
@@ -275,7 +288,8 @@ export default function KnowledgeBasePage() {
   if (!token || role !== 'admin') return null;
 
   return (
-    <AdminLayout userRole={role} activeMenu="Knowledge Base">
+    // NOTA: Ya no pasamos activeMenu
+    <AdminLayout userRole={role}>
       <div className="p-8">
         <h1 className="text-2xl font-bold mb-4">Knowledge Base</h1>
 
@@ -349,3 +363,4 @@ export default function KnowledgeBasePage() {
     </AdminLayout>
   );
 }
+
